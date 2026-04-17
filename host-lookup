@@ -6,7 +6,6 @@ Interactive script to find all hosts on local network and scan their open ports
 
 import socket
 import ipaddress
-import threading
 import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -58,6 +57,7 @@ class NetworkScanner:
         self.hosts = []
         self.results = {}
         self.network = None
+        self._hostname_cache = {}
 
     def get_local_ip(self):
         """Get the local IP address of this machine"""
@@ -69,6 +69,7 @@ class NetworkScanner:
             s.close()
             return local_ip
         except Exception:
+            print(f"{Colors.WARNING}Warning: Could not determine local IP, defaulting to 127.0.0.1{Colors.ENDC}")
             return "127.0.0.1"
 
     def get_network_range(self):
@@ -77,29 +78,24 @@ class NetworkScanner:
 
         # Get subnet mask (platform specific)
         system = platform.system()
+        mask = '255.255.255.0'  # safe default
         try:
             if system == "Windows":
                 result = subprocess.run(['ipconfig'], capture_output=True, text=True)
-                # Simple parsing for Windows - you might need to enhance this
                 for line in result.stdout.split('\n'):
                     if 'Subnet Mask' in line and '255' in line:
                         mask = line.split(':')[-1].strip()
                         break
-                else:
-                    mask = '255.255.255.0'  # Default mask
             else:  # Linux/Mac
                 result = subprocess.run(['ip', 'route'], capture_output=True, text=True)
                 for line in result.stdout.split('\n'):
-                    if 'src' in line and local_ip in line:
-                        parts = line.split()
-                        for i, part in enumerate(parts):
-                            if part == 'src' and i > 0:
-                                cidr = parts[i-1] if i > 0 else '24'
-                                if '/' in cidr:
-                                    return str(ipaddress.IPv4Network(f"{local_ip}/{cidr}", strict=False))
-                mask = '255.255.255.0'
+                    parts = line.split()
+                    # Lines like: "192.168.1.0/24 dev eth0 ... src 192.168.1.x ..."
+                    if parts and '/' in parts[0] and local_ip in line:
+                        cidr = parts[0]
+                        return ipaddress.IPv4Network(cidr, strict=False)
         except Exception:
-            mask = '255.255.255.0'
+            pass
 
         # Create network range
         network = ipaddress.IPv4Network(f"{local_ip}/{mask}", strict=False)
@@ -118,7 +114,7 @@ class NetworkScanner:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
             return result.returncode == 0
-        except:
+        except Exception:
             return False
 
     def scan_port(self, ip, port, timeout=1):
@@ -133,7 +129,7 @@ class NetworkScanner:
                 service = COMMON_PORTS.get(port, 'Unknown')
                 return port, service, True
             return port, None, False
-        except:
+        except Exception:
             return port, None, False
 
     def scan_host_ports(self, ip, ports, progress_callback=None):
@@ -168,18 +164,25 @@ class NetworkScanner:
                         active_hosts.append(ip)
                         if progress_callback:
                             progress_callback(ip, i, total)
-                except:
+                except Exception:
                     pass
 
         return active_hosts
 
     def get_hostname(self, ip):
-        """Get hostname from IP address"""
+        """Get hostname from IP address (cached, with timeout)"""
+        ip_str = str(ip)
+        if ip_str in self._hostname_cache:
+            return self._hostname_cache[ip_str]
         try:
-            hostname = socket.gethostbyaddr(str(ip))[0]
-            return hostname
-        except:
-            return "Unknown"
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(2)
+            hostname = socket.gethostbyaddr(ip_str)[0]
+            socket.setdefaulttimeout(old_timeout)
+        except Exception:
+            hostname = "Unknown"
+        self._hostname_cache[ip_str] = hostname
+        return hostname
 
 def interactive_menu():
     """Display interactive menu and handle user input"""
@@ -308,7 +311,7 @@ def full_network_scan_interactive(scanner):
     print(f"\n{Colors.BOLD}Now scanning each discovered host for open ports...{Colors.ENDC}")
     print(f"{Colors.WARNING}This may take a while depending on network size.{Colors.ENDC}\n")
 
-    ports = list(COMMON_PORTS.keys()) + list(range(1, 1024))
+    ports = list(COMMON_PORTS.keys()) + list(range(1, 1025))
     ports = sorted(set(ports))
 
     for host in scanner.hosts:
