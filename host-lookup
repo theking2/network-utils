@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""
+LAN Host Discovery & Port Scanner
+Interactive script to find all hosts on local network and scan their open ports
+"""
+
+import socket
+import ipaddress
+import threading
+import time
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import subprocess
+import sys
+import platform
+
+# ANSI color codes for pretty output
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+
+# Common ports to scan
+COMMON_PORTS = {
+    20: 'FTP (Data)',
+    21: 'FTP (Control)',
+    22: 'SSH',
+    23: 'Telnet',
+    25: 'SMTP',
+    53: 'DNS',
+    80: 'HTTP',
+    110: 'POP3',
+    111: 'RPC',
+    135: 'RPC',
+    139: 'NetBIOS',
+    143: 'IMAP',
+    443: 'HTTPS',
+    445: 'SMB',
+    993: 'IMAPS',
+    995: 'POP3S',
+    1433: 'MSSQL',
+    3306: 'MySQL',
+    3389: 'RDP',
+    5432: 'PostgreSQL',
+    5900: 'VNC',
+    8080: 'HTTP-Alt',
+    8443: 'HTTPS-Alt',
+    27017: 'MongoDB'
+}
+
+class NetworkScanner:
+    def __init__(self):
+        self.hosts = []
+        self.results = {}
+        self.network = None
+
+    def get_local_ip(self):
+        """Get the local IP address of this machine"""
+        try:
+            # Connect to an external address to get the local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            return local_ip
+        except Exception:
+            return "127.0.0.1"
+
+    def get_network_range(self):
+        """Determine the local network range"""
+        local_ip = self.get_local_ip()
+
+        # Get subnet mask (platform specific)
+        system = platform.system()
+        try:
+            if system == "Windows":
+                result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+                # Simple parsing for Windows - you might need to enhance this
+                for line in result.stdout.split('\n'):
+                    if 'Subnet Mask' in line and '255' in line:
+                        mask = line.split(':')[-1].strip()
+                        break
+                else:
+                    mask = '255.255.255.0'  # Default mask
+            else:  # Linux/Mac
+                result = subprocess.run(['ip', 'route'], capture_output=True, text=True)
+                for line in result.stdout.split('\n'):
+                    if 'src' in line and local_ip in line:
+                        parts = line.split()
+                        for i, part in enumerate(parts):
+                            if part == 'src' and i > 0:
+                                cidr = parts[i-1] if i > 0 else '24'
+                                if '/' in cidr:
+                                    return str(ipaddress.IPv4Network(f"{local_ip}/{cidr}", strict=False))
+                mask = '255.255.255.0'
+        except Exception:
+            mask = '255.255.255.0'
+
+        # Create network range
+        network = ipaddress.IPv4Network(f"{local_ip}/{mask}", strict=False)
+        return network
+
+    def ping_host(self, ip):
+        """Ping a host to check if it's alive"""
+        system = platform.system()
+
+        # Build ping command based on OS
+        if system == "Windows":
+            cmd = ['ping', '-n', '1', '-w', '1000', str(ip)]
+        else:
+            cmd = ['ping', '-c', '1', '-W', '1', str(ip)]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+            return result.returncode == 0
+        except:
+            return False
+
+    def scan_port(self, ip, port, timeout=1):
+        """Scan a single port on a host"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            result = sock.connect_ex((str(ip), port))
+            sock.close()
+
+            if result == 0:
+                service = COMMON_PORTS.get(port, 'Unknown')
+                return port, service, True
+            return port, None, False
+        except:
+            return port, None, False
+
+    def scan_host_ports(self, ip, ports, progress_callback=None):
+        """Scan multiple ports on a single host"""
+        open_ports = []
+        total = len(ports)
+
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {executor.submit(self.scan_port, ip, port): port for port in ports}
+
+            for i, future in enumerate(as_completed(futures), 1):
+                port, service, is_open = future.result()
+                if is_open:
+                    open_ports.append((port, service))
+                if progress_callback:
+                    progress_callback(ip, i, total)
+
+        return open_ports
+
+    def discover_hosts(self, network, max_workers=50, progress_callback=None):
+        """Discover all active hosts on the network"""
+        active_hosts = []
+        total = sum(1 for _ in network.hosts())
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(self.ping_host, ip): ip for ip in network.hosts()}
+
+            for i, future in enumerate(as_completed(futures), 1):
+                ip = futures[future]
+                try:
+                    if future.result():
+                        active_hosts.append(ip)
+                        if progress_callback:
+                            progress_callback(ip, i, total)
+                except:
+                    pass
+
+        return active_hosts
+
+    def get_hostname(self, ip):
+        """Get hostname from IP address"""
+        try:
+            hostname = socket.gethostbyaddr(str(ip))[0]
+            return hostname
+        except:
+            return "Unknown"
+
+def interactive_menu():
+    """Display interactive menu and handle user input"""
+    scanner = NetworkScanner()
+
+    while True:
+        print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
+        print(f"{Colors.BOLD}LAN HOST DISCOVERY & PORT SCANNER{Colors.ENDC}")
+        print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}")
+        print(f"{Colors.CYAN}1.{Colors.ENDC} Discover hosts on network")
+        print(f"{Colors.CYAN}2.{Colors.ENDC} Scan ports on a specific host")
+        print(f"{Colors.CYAN}3.{Colors.ENDC} Full network scan (discover + port scan)")
+        print(f"{Colors.CYAN}4.{Colors.ENDC} Custom port range scan")
+        print(f"{Colors.CYAN}5.{Colors.ENDC} Scan common ports only")
+        print(f"{Colors.CYAN}6.{Colors.ENDC} Show previously discovered hosts")
+        print(f"{Colors.CYAN}0.{Colors.ENDC} Exit")
+        print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}")
+
+        choice = input(f"\n{Colors.BOLD}Enter your choice: {Colors.ENDC}").strip()
+
+        if choice == '1':
+            discover_hosts_interactive(scanner)
+        elif choice == '2':
+            scan_single_host_interactive(scanner)
+        elif choice == '3':
+            full_network_scan_interactive(scanner)
+        elif choice == '4':
+            custom_port_scan_interactive(scanner)
+        elif choice == '5':
+            common_ports_scan_interactive(scanner)
+        elif choice == '6':
+            show_discovered_hosts(scanner)
+        elif choice == '0':
+            print(f"\n{Colors.GREEN}Goodbye!{Colors.ENDC}")
+            sys.exit(0)
+        else:
+            print(f"\n{Colors.FAIL}Invalid choice! Please try again.{Colors.ENDC}")
+
+        input(f"\n{Colors.CYAN}Press Enter to continue...{Colors.ENDC}")
+
+def discover_hosts_interactive(scanner):
+    """Discover hosts on the network"""
+    print(f"\n{Colors.BOLD}Discovering network...{Colors.ENDC}")
+
+    # Get network range
+    network = scanner.get_network_range()
+    print(f"{Colors.GREEN}Network range: {network}{Colors.ENDC}")
+    print(f"Your IP: {scanner.get_local_ip()}")
+
+    print(f"\n{Colors.WARNING}Scanning for active hosts (this may take a moment)...{Colors.ENDC}")
+
+    def progress_callback(ip, current, total):
+        if current % 10 == 0 or current == total:
+            print(f"Progress: {current}/{total} hosts checked", end='\r')
+
+    # Discover hosts
+    start_time = time.time()
+    active_hosts = scanner.discover_hosts(network, progress_callback=progress_callback)
+    scan_time = time.time() - start_time
+
+    scanner.hosts = active_hosts
+
+    print(f"\n\n{Colors.GREEN}Discovery complete! ({scan_time:.2f} seconds){Colors.ENDC}")
+    print(f"{Colors.BOLD}Found {len(active_hosts)} active host(s):{Colors.ENDC}\n")
+
+    for i, host in enumerate(active_hosts, 1):
+        hostname = scanner.get_hostname(host)
+        print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {host} - {hostname}")
+
+    # Save results
+    scanner.results['discovered_hosts'] = active_hosts
+
+def scan_single_host_interactive(scanner):
+    """Scan ports on a single host"""
+    if not scanner.hosts:
+        print(f"\n{Colors.WARNING}No hosts discovered yet. Please run option 1 first.{Colors.ENDC}")
+        return
+
+    print(f"\n{Colors.BOLD}Select a host to scan:{Colors.ENDC}")
+    for i, host in enumerate(scanner.hosts, 1):
+        hostname = scanner.get_hostname(host)
+        print(f"  {i}. {host} - {hostname}")
+
+    try:
+        choice = int(input(f"\n{Colors.CYAN}Enter host number: {Colors.ENDC}"))
+        if 1 <= choice <= len(scanner.hosts):
+            ip = scanner.hosts[choice-1]
+
+            print(f"\n{Colors.BOLD}Scanning ports on {ip}...{Colors.ENDC}")
+            print(f"{Colors.WARNING}This will scan common ports (1-1024).{Colors.ENDC}")
+
+            ports = list(COMMON_PORTS.keys()) + list(range(1, 1025))
+            ports = sorted(set(ports))
+
+            start_time = time.time()
+            open_ports = scanner.scan_host_ports(ip, ports)
+            scan_time = time.time() - start_time
+
+            print(f"\n{Colors.GREEN}Scan completed in {scan_time:.2f} seconds{Colors.ENDC}")
+
+            if open_ports:
+                print(f"\n{Colors.BOLD}Open ports on {ip}:{Colors.ENDC}")
+                for port, service in sorted(open_ports):
+                    print(f"  {Colors.GREEN}{port}{Colors.ENDC}/tcp - {service}")
+            else:
+                print(f"\n{Colors.WARNING}No open ports found on common ports.{Colors.ENDC}")
+
+            # Store results
+            scanner.results[ip] = open_ports
+        else:
+            print(f"{Colors.FAIL}Invalid choice!{Colors.ENDC}")
+    except ValueError:
+        print(f"{Colors.FAIL}Please enter a valid number.{Colors.ENDC}")
+
+def full_network_scan_interactive(scanner):
+    """Discover hosts and scan all of them"""
+    print(f"\n{Colors.BOLD}Starting full network scan...{Colors.ENDC}")
+
+    # First discover hosts
+    discover_hosts_interactive(scanner)
+
+    if not scanner.hosts:
+        print(f"{Colors.WARNING}No active hosts found.{Colors.ENDC}")
+        return
+
+    print(f"\n{Colors.BOLD}Now scanning each discovered host for open ports...{Colors.ENDC}")
+    print(f"{Colors.WARNING}This may take a while depending on network size.{Colors.ENDC}\n")
+
+    ports = list(COMMON_PORTS.keys()) + list(range(1, 1024))
+    ports = sorted(set(ports))
+
+    for host in scanner.hosts:
+        hostname = scanner.get_hostname(host)
+        print(f"\n{Colors.CYAN}Scanning {host} ({hostname})...{Colors.ENDC}")
+
+        start_time = time.time()
+        open_ports = scanner.scan_host_ports(host, ports)
+        scan_time = time.time() - start_time
+
+        print(f"  {Colors.GREEN}Completed in {scan_time:.2f} seconds{Colors.ENDC}")
+
+        if open_ports:
+            print(f"  {Colors.BOLD}Open ports:{Colors.ENDC}")
+            for port, service in sorted(open_ports):
+                print(f"    {Colors.GREEN}{port}{Colors.ENDC}/tcp - {service}")
+        else:
+            print(f"  {Colors.WARNING}No open ports found{Colors.ENDC}")
+
+        scanner.results[host] = open_ports
+
+def custom_port_scan_interactive(scanner):
+    """Scan custom port range on a host"""
+    if not scanner.hosts:
+        print(f"\n{Colors.WARNING}No hosts discovered yet. Please run option 1 first.{Colors.ENDC}")
+        return
+
+    print(f"\n{Colors.BOLD}Select a host to scan:{Colors.ENDC}")
+    for i, host in enumerate(scanner.hosts, 1):
+        hostname = scanner.get_hostname(host)
+        print(f"  {i}. {host} - {hostname}")
+
+    try:
+        choice = int(input(f"\n{Colors.CYAN}Enter host number: {Colors.ENDC}"))
+        if 1 <= choice <= len(scanner.hosts):
+            ip = scanner.hosts[choice-1]
+
+            print(f"\n{Colors.CYAN}Enter port range (e.g., 1-1000): {Colors.ENDC}")
+            port_range = input().strip()
+
+            try:
+                start_port, end_port = map(int, port_range.split('-'))
+                if start_port < 1 or end_port > 65535 or start_port > end_port:
+                    print(f"{Colors.FAIL}Invalid port range! Ports must be between 1-65535{Colors.ENDC}")
+                    return
+
+                ports = list(range(start_port, end_port + 1))
+
+                print(f"\n{Colors.BOLD}Scanning {len(ports)} ports on {ip}...{Colors.ENDC}")
+
+                start_time = time.time()
+                open_ports = scanner.scan_host_ports(ip, ports)
+                scan_time = time.time() - start_time
+
+                print(f"\n{Colors.GREEN}Scan completed in {scan_time:.2f} seconds{Colors.ENDC}")
+
+                if open_ports:
+                    print(f"\n{Colors.BOLD}Open ports on {ip}:{Colors.ENDC}")
+                    for port, service in sorted(open_ports):
+                        service_name = COMMON_PORTS.get(port, 'Unknown')
+                        print(f"  {Colors.GREEN}{port}{Colors.ENDC}/tcp - {service_name}")
+                else:
+                    print(f"\n{Colors.WARNING}No open ports found in range {start_port}-{end_port}.{Colors.ENDC}")
+
+                scanner.results[ip] = open_ports
+            except ValueError:
+                print(f"{Colors.FAIL}Invalid format! Please use format like: 1-1000{Colors.ENDC}")
+        else:
+            print(f"{Colors.FAIL}Invalid choice!{Colors.ENDC}")
+    except ValueError:
+        print(f"{Colors.FAIL}Please enter a valid number.{Colors.ENDC}")
+
+def common_ports_scan_interactive(scanner):
+    """Scan only common ports on a host"""
+    if not scanner.hosts:
+        print(f"\n{Colors.WARNING}No hosts discovered yet. Please run option 1 first.{Colors.ENDC}")
+        return
+
+    print(f"\n{Colors.BOLD}Select a host to scan:{Colors.ENDC}")
+    for i, host in enumerate(scanner.hosts, 1):
+        hostname = scanner.get_hostname(host)
+        print(f"  {i}. {host} - {hostname}")
+
+    try:
+        choice = int(input(f"\n{Colors.CYAN}Enter host number: {Colors.ENDC}"))
+        if 1 <= choice <= len(scanner.hosts):
+            ip = scanner.hosts[choice-1]
+
+            print(f"\n{Colors.BOLD}Scanning common ports on {ip}...{Colors.ENDC}")
+
+            ports = list(COMMON_PORTS.keys())
+
+            start_time = time.time()
+            open_ports = scanner.scan_host_ports(ip, ports)
+            scan_time = time.time() - start_time
+
+            print(f"\n{Colors.GREEN}Scan completed in {scan_time:.2f} seconds{Colors.ENDC}")
+
+            if open_ports:
+                print(f"\n{Colors.BOLD}Open ports on {ip}:{Colors.ENDC}")
+                for port, service in sorted(open_ports):
+                    print(f"  {Colors.GREEN}{port}{Colors.ENDC}/tcp - {service}")
+            else:
+                print(f"\n{Colors.WARNING}No common ports are open on this host.{Colors.ENDC}")
+
+            scanner.results[ip] = open_ports
+        else:
+            print(f"{Colors.FAIL}Invalid choice!{Colors.ENDC}")
+    except ValueError:
+        print(f"{Colors.FAIL}Please enter a valid number.{Colors.ENDC}")
+
+def show_discovered_hosts(scanner):
+    """Show previously discovered hosts"""
+    if not scanner.hosts:
+        print(f"\n{Colors.WARNING}No hosts discovered yet. Please run option 1 first.{Colors.ENDC}")
+        return
+
+    print(f"\n{Colors.BOLD}Previously discovered hosts:{Colors.ENDC}\n")
+    for i, host in enumerate(scanner.hosts, 1):
+        hostname = scanner.get_hostname(host)
+        print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {host} - {hostname}")
+
+        if host in scanner.results and scanner.results[host]:
+            print(f"     {Colors.GREEN}Open ports: {', '.join(str(p[0]) for p in scanner.results[host])}{Colors.ENDC}")
+
+def main():
+    """Main entry point"""
+    print(f"{Colors.HEADER}")
+    print("╔══════════════════════════════════════════════════════════╗")
+    print("║         LAN HOST DISCOVERY & PORT SCANNER                ║")
+    print("║                   Interactive Tool                       ║")
+    print("╚══════════════════════════════════════════════════════════╝")
+    print(f"{Colors.ENDC}")
+
+    print(f"{Colors.WARNING}Note: Some networks may block ICMP (ping) packets.{Colors.ENDC}")
+    print(f"{Colors.WARNING}Run with appropriate permissions for best results.{Colors.ENDC}")
+
+    try:
+        interactive_menu()
+    except KeyboardInterrupt:
+        print(f"\n\n{Colors.WARNING}Scan interrupted by user.{Colors.ENDC}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Colors.FAIL}Error: {e}{Colors.ENDC}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
