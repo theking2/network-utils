@@ -318,10 +318,11 @@ def discover_hosts_interactive(scanner):
 
     scanner.sort_hosts_by_hostname()
 
+    width = len(str(len(scanner.hosts)))
     for i, host in enumerate(scanner.hosts, 1):
         hostname = scanner.get_hostname(host)
         mac = scanner.get_mac_address(host)
-        print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {str(host):<{IP_COLUMN_WIDTH}} {hostname:<{HOSTNAME_COLUMN_WIDTH}} {Colors.BLUE}{mac}{Colors.ENDC}")
+        print(f"  {Colors.CYAN}{i:>{width}}.{Colors.ENDC} {str(host):<{IP_COLUMN_WIDTH}} {hostname:<{HOSTNAME_COLUMN_WIDTH}} {Colors.BLUE}{mac}{Colors.ENDC}")
 
 def scan_single_host_interactive(scanner):
     """Scan ports on a single host"""
@@ -330,9 +331,10 @@ def scan_single_host_interactive(scanner):
         return
 
     print(f"\n{Colors.BOLD}Select a host to scan:{Colors.ENDC}")
+    width = len(str(len(scanner.hosts)))
     for i, host in enumerate(scanner.hosts, 1):
         hostname = scanner.get_hostname(host)
-        print(f"  {i}. {host} - {hostname}")
+        print(f"  {i:>{width}}. {host} - {hostname}")
 
     try:
         choice = int(input(f"\n{Colors.CYAN}Enter host number: {Colors.ENDC}"))
@@ -408,9 +410,10 @@ def custom_port_scan_interactive(scanner):
         return
 
     print(f"\n{Colors.BOLD}Select a host to scan:{Colors.ENDC}")
+    width = len(str(len(scanner.hosts)))
     for i, host in enumerate(scanner.hosts, 1):
         hostname = scanner.get_hostname(host)
-        print(f"  {i}. {host} - {hostname}")
+        print(f"  {i:>{width}}. {host} - {hostname}")
 
     try:
         choice = int(input(f"\n{Colors.CYAN}Enter host number: {Colors.ENDC}"))
@@ -459,9 +462,10 @@ def common_ports_scan_interactive(scanner):
         return
 
     print(f"\n{Colors.BOLD}Select a host to scan:{Colors.ENDC}")
+    width = len(str(len(scanner.hosts)))
     for i, host in enumerate(scanner.hosts, 1):
         hostname = scanner.get_hostname(host)
-        print(f"  {i}. {host} - {hostname}")
+        print(f"  {i:>{width}}. {host} - {hostname}")
 
     try:
         choice = int(input(f"\n{Colors.CYAN}Enter host number: {Colors.ENDC}"))
@@ -498,10 +502,11 @@ def show_discovered_hosts(scanner):
         return
 
     print(f"\n{Colors.BOLD}Previously discovered hosts:{Colors.ENDC}\n")
+    width = len(str(len(scanner.hosts)))
     for i, host in enumerate(scanner.hosts, 1):
         hostname = scanner.get_hostname(host)
         mac = scanner.get_mac_address(host)
-        print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {str(host):<{IP_COLUMN_WIDTH}} {hostname:<{HOSTNAME_COLUMN_WIDTH}} {Colors.BLUE}{mac}{Colors.ENDC}")
+        print(f"  {Colors.CYAN}{i:>{width}}.{Colors.ENDC} {str(host):<{IP_COLUMN_WIDTH}} {hostname:<{HOSTNAME_COLUMN_WIDTH}} {Colors.BLUE}{mac}{Colors.ENDC}")
 
         if host in scanner.results and scanner.results[host]:
             print(f"     {Colors.GREEN}Open ports: {', '.join(str(p[0]) for p in scanner.results[host])}{Colors.ENDC}")
