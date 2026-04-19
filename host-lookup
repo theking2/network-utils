@@ -184,6 +184,10 @@ class NetworkScanner:
         self._hostname_cache[ip_str] = hostname
         return hostname
 
+    def sort_hosts_by_hostname(self):
+        """Sort the hosts list by hostname using the hostname cache"""
+        self.hosts.sort(key=lambda ip: self._hostname_cache.get(str(ip), str(ip)).lower())
+
 def interactive_menu():
     """Display interactive menu and handle user input"""
     scanner = NetworkScanner()
@@ -248,12 +252,17 @@ def discover_hosts_interactive(scanner):
     print(f"\n\n{Colors.GREEN}Discovery complete! ({scan_time:.2f} seconds){Colors.ENDC}")
     print(f"{Colors.BOLD}Found {len(active_hosts)} active host(s):{Colors.ENDC}\n")
 
-    for i, host in enumerate(active_hosts, 1):
+    for host in active_hosts:
+        scanner.get_hostname(host)
+
+    scanner.sort_hosts_by_hostname()
+
+    for i, host in enumerate(scanner.hosts, 1):
         hostname = scanner.get_hostname(host)
         print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {host} - {hostname}")
 
     # Save results
-    scanner.results['discovered_hosts'] = active_hosts
+    scanner.results['discovered_hosts'] = scanner.hosts
 
 def scan_single_host_interactive(scanner):
     """Scan ports on a single host"""
