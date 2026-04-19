@@ -52,12 +52,17 @@ COMMON_PORTS = {
     27017: 'MongoDB'
 }
 
+# Display column widths for host listing
+IP_COLUMN_WIDTH = 15
+HOSTNAME_COLUMN_WIDTH = 30
+
 class NetworkScanner:
     def __init__(self):
         self.hosts = []
         self.results = {}
         self.network = None
         self._hostname_cache = {}
+        self._mac_cache = {}
 
     def get_local_ip(self):
         """Get the local IP address of this machine"""
@@ -184,6 +189,62 @@ class NetworkScanner:
         self._hostname_cache[ip_str] = hostname
         return hostname
 
+    def _parse_mac_from_arp_output(self, ip_str, output):
+        """Extract MAC address from arp command output for the given IP.
+
+        Returns the MAC address string in colon-separated format (e.g. 'aa:bb:cc:dd:ee:ff'),
+        or None if no MAC address was found for the given IP in the output.
+        """
+        for line in output.split('\n'):
+            if ip_str in line:
+                for part in line.split():
+                    if part.count(':') == 5 or part.count('-') == 5:
+                        return part.replace('-', ':')
+        return None
+
+    def get_mac_address(self, ip):
+        """Get MAC address for an IP from the ARP cache (cross-platform)"""
+        ip_str = str(ip)
+        if ip_str in self._mac_cache:
+            return self._mac_cache[ip_str]
+
+        mac = "N/A"
+        try:
+            system = platform.system()
+            if system == "Linux":
+                try:
+                    with open('/proc/net/arp', 'r') as f:
+                        for line in f:
+                            parts = line.split()
+                            if len(parts) >= 4 and parts[0] == ip_str and parts[2] != '0x0':
+                                mac = parts[3]
+                                break
+                except Exception:
+                    pass
+                if mac == "N/A":
+                    result = subprocess.run(['arp', '-n', ip_str], capture_output=True, text=True, timeout=3)
+                    if result.returncode == 0:
+                        found = self._parse_mac_from_arp_output(ip_str, result.stdout)
+                        if found:
+                            mac = found
+            elif system == "Darwin":
+                result = subprocess.run(['arp', '-n', ip_str], capture_output=True, text=True, timeout=3)
+                if result.returncode == 0:
+                    found = self._parse_mac_from_arp_output(ip_str, result.stdout)
+                    if found:
+                        mac = found
+            elif system == "Windows":
+                result = subprocess.run(['arp', '-a', ip_str], capture_output=True, text=True, timeout=3)
+                if result.returncode == 0:
+                    found = self._parse_mac_from_arp_output(ip_str, result.stdout)
+                    if found:
+                        mac = found
+        except Exception:
+            pass
+
+        self._mac_cache[ip_str] = mac
+        return mac
+
     def sort_hosts_by_hostname(self):
         """Sort the hosts list by hostname using the hostname cache"""
         self.hosts.sort(key=lambda ip: self._hostname_cache.get(str(ip), str(ip)).lower())
@@ -259,10 +320,8 @@ def discover_hosts_interactive(scanner):
 
     for i, host in enumerate(scanner.hosts, 1):
         hostname = scanner.get_hostname(host)
-        print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {host} - {hostname}")
-
-    # Save results
-    scanner.results['discovered_hosts'] = scanner.hosts
+        mac = scanner.get_mac_address(host)
+        print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {str(host):<{IP_COLUMN_WIDTH}} {hostname:<{HOSTNAME_COLUMN_WIDTH}} {Colors.BLUE}{mac}{Colors.ENDC}")
 
 def scan_single_host_interactive(scanner):
     """Scan ports on a single host"""
@@ -441,7 +500,8 @@ def show_discovered_hosts(scanner):
     print(f"\n{Colors.BOLD}Previously discovered hosts:{Colors.ENDC}\n")
     for i, host in enumerate(scanner.hosts, 1):
         hostname = scanner.get_hostname(host)
-        print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {host} - {hostname}")
+        mac = scanner.get_mac_address(host)
+        print(f"  {Colors.CYAN}{i}.{Colors.ENDC} {str(host):<{IP_COLUMN_WIDTH}} {hostname:<{HOSTNAME_COLUMN_WIDTH}} {Colors.BLUE}{mac}{Colors.ENDC}")
 
         if host in scanner.results and scanner.results[host]:
             print(f"     {Colors.GREEN}Open ports: {', '.join(str(p[0]) for p in scanner.results[host])}{Colors.ENDC}")
